@@ -1,3 +1,20 @@
+// SPDX-License-Identifier: MIT
+/*
+
+██████╗ ███████╗██████╗  █████╗ ███████╗███████╗
+██╔══██╗██╔════╝██╔══██╗██╔══██╗██╔════╝██╔════╝
+██║  ██║█████╗  ██████╔╝███████║███████╗█████╗  
+██║  ██║██╔══╝  ██╔══██╗██╔══██║╚════██║██╔══╝  
+██████╔╝███████╗██████╔╝██║  ██║███████║███████╗
+╚═════╝ ╚══════╝╚═════╝ ╚═╝  ╚═╝╚══════╝╚══════╝
+                                               
+
+* Debase: DaiLpPool.sol
+* Description:
+* Farm DEBASE-DAI Uni V2 LP token to get DEBASE, DAI, MPH rewards.
+* Coded by: Ryuhei Matsuda
+*/
+
 pragma solidity >=0.6.6;
 pragma experimental ABIEncoderV2;
 
@@ -7,6 +24,7 @@ import "@openzeppelin/contracts/math/Math.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "./interfaces/IUniswapV2Pair.sol";
 import "./interfaces/IDInterest.sol";
 import "./interfaces/IReward.sol";
@@ -24,7 +42,7 @@ interface IVesting {
     function accountVestList(address account, uint256 vestIdx) external view returns (Vest memory);
 }
 
-contract DaiLpPool is Ownable, IERC721Receiver {
+contract DaiLpPool is Ownable, IERC721Receiver, ReentrancyGuard {
     using SafeMath for uint256;
     using SafeERC20 for IERC20;
 
@@ -79,11 +97,13 @@ contract DaiLpPool is Ownable, IERC721Receiver {
     uint256 public totalLpLocked;
 
     mapping (uint256 => DepositInfo) public deposits;
+    mapping (address => uint256[]) public depositIds;
+
     mapping (address => uint256) public lpDeposits;
     mapping (uint256 => uint256) daiOffsetForMphStaking;   // DAI reward offset, times 1e12.
     uint256 public depositLength;
-    uint256 public daiFee = 30;
-    uint256 public mphFee = 30;
+    uint256 public daiFee = 300;
+    uint256 public mphFee = 300;
     uint256 public totalMphStaked;
     address public treasury;
 
@@ -225,6 +245,7 @@ contract DaiLpPool is Ownable, IERC721Receiver {
     function deposit(uint256 amount)
         external
         enabled
+        nonReentrant
         returns (uint256)
     {
         require(totalLpLimitEnabled == false || totalLpLocked.add(amount) <= totalLpLimit, 'To much lp locked');
@@ -253,12 +274,18 @@ contract DaiLpPool is Ownable, IERC721Receiver {
             mphVestingIdx: vestingIdx,
             withdrawed: false
         });
+        depositIds[msg.sender].push(depositLength);
+
         lastVestingIdx = vestingIdx.add(1);
         depositLength = depositLength.add(1);
 
         _updateDebaseReward(daiDepositId);
         emit onDeposit(msg.sender, amount, maturationTimestamp, depositLength.sub(1));
         return depositLength.sub(1);
+    }
+
+    function userDepositLength(address user) external view returns (uint256) {
+        return depositIds[user].length;
     }
 
     function _gonsPerFragment() internal view returns (uint256) {
@@ -320,13 +347,13 @@ contract DaiLpPool is Ownable, IERC721Receiver {
         emit onWithdraw(user, depositInfo.amount, depositId);
     }
 
-    function withdraw(uint256 depositId, uint256 fundingId) external
+    function withdraw(uint256 depositId, uint256 fundingId) external nonReentrant
     {
         _withdrawMphVested();
         _withdraw(msg.sender, depositId, fundingId);
     }
 
-    function multiWithdraw(uint256[] calldata depositIds, uint256[] calldata fundingIds) external {
+    function multiWithdraw(uint256[] calldata depositIds, uint256[] calldata fundingIds) external nonReentrant {
         require(depositIds.length == fundingIds.length, 'incorrect length');
         _withdrawMphVested();
         for (uint256 i = 0; i < depositIds.length; i += 1) {
@@ -334,7 +361,7 @@ contract DaiLpPool is Ownable, IERC721Receiver {
         }
     }
 
-    function emergencyWithdraw(uint256 depositId, uint256 fundingId) external enabled {
+    function emergencyWithdraw(uint256 depositId, uint256 fundingId) external enabled nonReentrant {
         require(allowEmergencyWithdraw, 'emergency withdraw disabled');
         require (depositId < depositLength, 'no deposit');
         _withdrawMphVested();
